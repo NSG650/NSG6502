@@ -124,6 +124,70 @@ static void nsg6502_evaluate_flags(struct nsg6502_cpu *c, uint8_t res) {
     }
 }
 
+static void nsg6502_adc(struct nsg6502_cpu *c, uint8_t d) {
+    int32_t tmp = c->a + d + (NSG6502_FLAG_IS_SET(c->status, NSG6502_STATUS_REGISTER_CARRY) ? 1 : 0);
+
+    if (!(tmp & 0xFF)) {
+        NSG6502_FLAG_SET(c->status, NSG6502_STATUS_REGISTER_ZERO);
+    }
+
+    if (NSG6502_FLAG_IS_SET(c->status, NSG6502_STATUS_REGISTER_DECIMAL)) {
+        if ((c->a & 0xF) + (d & 0xF) + (NSG6502_FLAG_IS_SET(c->status, NSG6502_STATUS_REGISTER_CARRY) ? 1 : 0) > 9) {
+            tmp += 6;
+        }
+        if (tmp > 0x99) {
+            tmp += 96;
+            NSG6502_FLAG_SET(c->status, NSG6502_STATUS_REGISTER_CARRY);
+        }
+    }
+    else {
+        if (tmp > 0xFF) {
+            NSG6502_FLAG_SET(c->status, NSG6502_STATUS_REGISTER_CARRY);
+        }
+    }
+
+    if ((tmp & 0x80)) {
+        NSG6502_FLAG_SET(c->status, NSG6502_STATUS_REGISTER_NEGATIVE);
+    }
+
+    if (!((c->a ^ d) & 0x80) && ((c->a ^ tmp) & 0x80)) {
+        NSG6502_FLAG_SET(c->status, NSG6502_STATUS_REGISTER_OVERFLOW);
+    }
+
+    c->a = (uint8_t)(tmp & 0xFF);
+}
+
+static void nsg6502_sbc(struct nsg6502_cpu *c, uint8_t d) {
+    int32_t tmp = c->a - d - (NSG6502_FLAG_IS_SET(c->status, NSG6502_STATUS_REGISTER_CARRY) ? 1 : 0);
+
+    if (!(tmp & 0xFF)) {
+        NSG6502_FLAG_SET(c->status, NSG6502_STATUS_REGISTER_ZERO);
+    }
+
+    if ((tmp & 0x80)) {
+        NSG6502_FLAG_SET(c->status, NSG6502_STATUS_REGISTER_NEGATIVE);
+    }
+
+    if (!((c->a ^ d) & 0x80) && ((c->a ^ tmp) & 0x80)) {
+        NSG6502_FLAG_SET(c->status, NSG6502_STATUS_REGISTER_OVERFLOW);
+    }
+
+    if (NSG6502_FLAG_IS_SET(c->status, NSG6502_STATUS_REGISTER_DECIMAL)) {
+        if (((c->a & 0xF) - ((NSG6502_FLAG_IS_SET(c->status, NSG6502_STATUS_REGISTER_CARRY) ? 1 : 0)) < (d & 0x0F))) {
+            tmp -= 6;
+        }
+        if (tmp > 0x99) {
+            tmp -= 0x60;
+        }
+    }
+
+    if (tmp < 0x100) {
+        NSG6502_FLAG_SET(c->status, NSG6502_STATUS_REGISTER_CARRY);
+    }
+
+    c->a = (uint8_t)(tmp & 0xFF);
+}
+
 struct nsg6502_opcode {
     char *name;
     size_t ticks;
@@ -434,9 +498,239 @@ static void nsg6502_opcode_plp(struct nsg6502_cpu *c) {
     c->status = nsg6502_stack_pop_byte(c);
 }
 
+static void nsg6502_opcode_ora_imm(struct nsg6502_cpu *c) {
+    c->a |= nsg6502_fetch_byte(c);
+    nsg6502_evaluate_flags(c, c->a);
+}
+
+static void nsg6502_opcode_ora_zp(struct nsg6502_cpu *c) {
+    c->a |= nsg6502_read_byte(c, nsg6502_fetch_byte(c));
+    nsg6502_evaluate_flags(c, c->a);
+}
+
+static void nsg6502_opcode_ora_zpx(struct nsg6502_cpu *c) {
+    c->a |= nsg6502_read_byte(c, (nsg6502_fetch_byte(c) + c->x) & 0xFF);
+    nsg6502_evaluate_flags(c, c->a);
+}
+
+static void nsg6502_opcode_ora_abs(struct nsg6502_cpu *c) {
+    c->a |= nsg6502_read_byte(c, nsg6502_fetch_word(c));
+    nsg6502_evaluate_flags(c, c->a);
+}
+
+static void nsg6502_opcode_ora_abx(struct nsg6502_cpu *c) {
+    c->a |= nsg6502_read_byte(c, nsg6502_fetch_word(c) + c->x);
+    nsg6502_evaluate_flags(c, c->a);
+}
+
+static void nsg6502_opcode_ora_aby(struct nsg6502_cpu *c) {
+    c->a |= nsg6502_read_byte(c, nsg6502_fetch_word(c) + c->y);
+    nsg6502_evaluate_flags(c, c->a);
+}
+
+static void nsg6502_opcode_ora_inx(struct nsg6502_cpu *c) {
+    c->a |= nsg6502_read_byte(c, nsg6502_read_word(c, nsg6502_fetch_byte(c)) + c->x);
+    nsg6502_evaluate_flags(c, c->a);
+}
+
+static void nsg6502_opcode_ora_iny(struct nsg6502_cpu *c) {
+    c->a |= nsg6502_read_byte(c, nsg6502_read_word(c, nsg6502_fetch_byte(c)) + c->y);
+    nsg6502_evaluate_flags(c, c->a);
+}
+
+static void nsg6502_opcode_and_imm(struct nsg6502_cpu *c) {
+    c->a &= nsg6502_fetch_byte(c);
+    nsg6502_evaluate_flags(c, c->a);
+}
+
+static void nsg6502_opcode_and_zp(struct nsg6502_cpu *c) {
+    c->a &= nsg6502_read_byte(c, nsg6502_fetch_byte(c));
+    nsg6502_evaluate_flags(c, c->a);
+}
+
+static void nsg6502_opcode_and_zpx(struct nsg6502_cpu *c) {
+    c->a &= nsg6502_read_byte(c, (nsg6502_fetch_byte(c) + c->x) & 0xFF);
+    nsg6502_evaluate_flags(c, c->a);
+}
+
+static void nsg6502_opcode_and_abs(struct nsg6502_cpu *c) {
+    c->a &= nsg6502_read_byte(c, nsg6502_fetch_word(c));
+    nsg6502_evaluate_flags(c, c->a);
+}
+
+static void nsg6502_opcode_and_abx(struct nsg6502_cpu *c) {
+    c->a &= nsg6502_read_byte(c, nsg6502_fetch_word(c) + c->x);
+    nsg6502_evaluate_flags(c, c->a);
+}
+
+static void nsg6502_opcode_and_aby(struct nsg6502_cpu *c) {
+    c->a &= nsg6502_read_byte(c, nsg6502_fetch_word(c) + c->y);
+    nsg6502_evaluate_flags(c, c->a);
+}
+
+static void nsg6502_opcode_and_inx(struct nsg6502_cpu *c) {
+    c->a &= nsg6502_read_byte(c, nsg6502_read_word(c, nsg6502_fetch_byte(c)) + c->x);
+    nsg6502_evaluate_flags(c, c->a);
+}
+
+static void nsg6502_opcode_and_iny(struct nsg6502_cpu *c) {
+    c->a &= nsg6502_read_byte(c, nsg6502_read_word(c, nsg6502_fetch_byte(c)) + c->y);
+    nsg6502_evaluate_flags(c, c->a);
+}
+
+static void nsg6502_opcode_eor_imm(struct nsg6502_cpu *c) {
+    c->a ^= nsg6502_fetch_byte(c);
+    nsg6502_evaluate_flags(c, c->a);
+}
+
+static void nsg6502_opcode_eor_zp(struct nsg6502_cpu *c) {
+    c->a ^= nsg6502_read_byte(c, nsg6502_fetch_byte(c));
+    nsg6502_evaluate_flags(c, c->a);
+}
+
+static void nsg6502_opcode_eor_zpx(struct nsg6502_cpu *c) {
+    c->a ^= nsg6502_read_byte(c, (nsg6502_fetch_byte(c) + c->x) & 0xFF);
+    nsg6502_evaluate_flags(c, c->a);
+}
+
+static void nsg6502_opcode_eor_abs(struct nsg6502_cpu *c) {
+    c->a ^= nsg6502_read_byte(c, nsg6502_fetch_word(c));
+    nsg6502_evaluate_flags(c, c->a);
+}
+
+static void nsg6502_opcode_eor_abx(struct nsg6502_cpu *c) {
+    c->a ^= nsg6502_read_byte(c, nsg6502_fetch_word(c) + c->x);
+    nsg6502_evaluate_flags(c, c->a);
+}
+
+static void nsg6502_opcode_eor_aby(struct nsg6502_cpu *c) {
+    c->a ^= nsg6502_read_byte(c, nsg6502_fetch_word(c) + c->y);
+    nsg6502_evaluate_flags(c, c->a);
+}
+
+static void nsg6502_opcode_eor_inx(struct nsg6502_cpu *c) {
+    c->a ^= nsg6502_read_byte(c, nsg6502_read_word(c, nsg6502_fetch_byte(c)) + c->x);
+    nsg6502_evaluate_flags(c, c->a);
+}
+
+static void nsg6502_opcode_eor_iny(struct nsg6502_cpu *c) {
+    c->a ^= nsg6502_read_byte(c, nsg6502_read_word(c, nsg6502_fetch_byte(c)) + c->y);
+    nsg6502_evaluate_flags(c, c->a);
+}
+
+static void nsg6502_opcode_adc_imm(struct nsg6502_cpu *c) {
+    nsg6502_adc(c, nsg6502_fetch_byte(c));
+}
+
+static void nsg6502_opcode_adc_zp(struct nsg6502_cpu *c) {
+    nsg6502_adc(c, nsg6502_read_byte(c, nsg6502_fetch_byte(c)));
+}
+
+static void nsg6502_opcode_adc_zpx(struct nsg6502_cpu *c) {
+    nsg6502_adc(c, nsg6502_read_byte(c, (nsg6502_fetch_byte(c)) + c->x) & 0xFF);
+}
+
+static void nsg6502_opcode_adc_abs(struct nsg6502_cpu *c) {
+    nsg6502_adc(c, nsg6502_read_byte(c, nsg6502_fetch_word(c)));
+}
+
+static void nsg6502_opcode_adc_abx(struct nsg6502_cpu *c) {
+    nsg6502_adc(c, nsg6502_read_byte(c, nsg6502_fetch_word(c)) + c->x);
+}
+
+static void nsg6502_opcode_adc_aby(struct nsg6502_cpu *c) {
+    nsg6502_adc(c, nsg6502_read_byte(c, nsg6502_fetch_word(c)) + c->y);
+}
+
+static void nsg6502_opcode_adc_inx(struct nsg6502_cpu *c) {
+    nsg6502_adc(c, nsg6502_read_byte(c, nsg6502_read_word(c, nsg6502_fetch_byte(c))) + c->x);
+}
+
+static void nsg6502_opcode_adc_iny(struct nsg6502_cpu *c) {
+    nsg6502_adc(c, nsg6502_read_byte(c, nsg6502_read_word(c, nsg6502_fetch_byte(c))) + c->y);
+}
+
+static void nsg6502_opcode_sbc_imm(struct nsg6502_cpu *c) {
+    nsg6502_sbc(c, nsg6502_fetch_byte(c));
+}
+
+static void nsg6502_opcode_sbc_zp(struct nsg6502_cpu *c) {
+    nsg6502_sbc(c, nsg6502_read_byte(c, nsg6502_fetch_byte(c)));
+}
+
+static void nsg6502_opcode_sbc_zpx(struct nsg6502_cpu *c) {
+    nsg6502_sbc(c, nsg6502_read_byte(c, (nsg6502_fetch_byte(c)) + c->x) & 0xFF);
+}
+
+static void nsg6502_opcode_sbc_abs(struct nsg6502_cpu *c) {
+    nsg6502_sbc(c, nsg6502_read_byte(c, nsg6502_fetch_word(c)));
+}
+
+static void nsg6502_opcode_sbc_abx(struct nsg6502_cpu *c) {
+    nsg6502_sbc(c, nsg6502_read_byte(c, nsg6502_fetch_word(c)) + c->x);
+}
+
+static void nsg6502_opcode_sbc_aby(struct nsg6502_cpu *c) {
+    nsg6502_sbc(c, nsg6502_read_byte(c, nsg6502_fetch_word(c)) + c->y);
+}
+
+static void nsg6502_opcode_sbc_inx(struct nsg6502_cpu *c) {
+    nsg6502_sbc(c, nsg6502_read_byte(c, nsg6502_read_word(c, nsg6502_fetch_byte(c))) + c->x);
+}
+
+static void nsg6502_opcode_sbc_iny(struct nsg6502_cpu *c) {
+    nsg6502_sbc(c, nsg6502_read_byte(c, nsg6502_read_word(c, nsg6502_fetch_byte(c))) + c->y);
+}
+
+
 // Cycle count might be incorrect
 // Not bothered to fix it
 const struct nsg6502_opcode NSG6502_OPCODES[256] = {
+        [0xE9] = {"SBC #", 1, nsg6502_opcode_sbc_imm},
+        [0xE5] = {"SBC ZP", 1, nsg6502_opcode_sbc_zp},
+        [0xF5] = {"SBC ZP, X", 2, nsg6502_opcode_sbc_zpx},
+        [0xED] = {"SBC ABS", 1, nsg6502_opcode_sbc_abs},
+        [0xFD] = {"SBC ABS, X", 1, nsg6502_opcode_sbc_abx},
+        [0xF9] = {"SBC ABS, Y", 1, nsg6502_opcode_sbc_aby},
+        [0xE1] = {"SBC INX", 1, nsg6502_opcode_sbc_inx},
+        [0xF1] = {"SBC INY", 1, nsg6502_opcode_sbc_iny},
+
+        [0x69] = {"ADC #", 1, nsg6502_opcode_adc_imm},
+        [0x65] = {"ADC ZP", 1, nsg6502_opcode_adc_zp},
+        [0x75] = {"ADC ZP, X", 2, nsg6502_opcode_adc_zpx},
+        [0x6D] = {"ADC ABS", 1, nsg6502_opcode_adc_abs},
+        [0x7D] = {"ADC ABS, X", 1, nsg6502_opcode_adc_abx},
+        [0x79] = {"ADC ABS, Y", 1, nsg6502_opcode_adc_aby},
+        [0x61] = {"ADC INX", 1, nsg6502_opcode_adc_inx},
+        [0x71] = {"ADC INY", 1, nsg6502_opcode_adc_iny},
+
+        [0x49] = {"EOR #", 1, nsg6502_opcode_eor_imm},
+        [0x45] = {"EOR ZP", 1, nsg6502_opcode_eor_zp},
+        [0x55] = {"EOR ZP, X", 2, nsg6502_opcode_eor_zpx},
+        [0x4D] = {"EOR ABS", 1, nsg6502_opcode_eor_abs},
+        [0x5D] = {"EOR ABS, X", 1, nsg6502_opcode_eor_abx},
+        [0x59] = {"EOR ABS, Y", 1, nsg6502_opcode_eor_aby},
+        [0x41] = {"EOR INX", 1, nsg6502_opcode_eor_inx},
+        [0x51] = {"EOR INY", 1, nsg6502_opcode_eor_iny},
+
+        [0x29] = {"AND #", 1, nsg6502_opcode_and_imm},
+        [0x25] = {"AND ZP", 1, nsg6502_opcode_and_zp},
+        [0x35] = {"AND ZP, X", 2, nsg6502_opcode_and_zpx},
+        [0x2D] = {"AND ABS", 1, nsg6502_opcode_and_abs},
+        [0x3D] = {"AND ABS, X", 1, nsg6502_opcode_and_abx},
+        [0x39] = {"AND ABS, Y", 1, nsg6502_opcode_and_aby},
+        [0x21] = {"AND INX", 1, nsg6502_opcode_and_inx},
+        [0x31] = {"AND INY", 1, nsg6502_opcode_and_iny},
+
+        [0x09] = {"ORA #", 1, nsg6502_opcode_ora_imm},
+        [0x05] = {"ORA ZP", 1, nsg6502_opcode_ora_zp},
+        [0x15] = {"ORA ZP, X", 2, nsg6502_opcode_ora_zpx},
+        [0x0D] = {"ORA ABS", 1, nsg6502_opcode_ora_abs},
+        [0x1D] = {"ORA ABS, X", 1, nsg6502_opcode_ora_abx},
+        [0x19] = {"ORA ABS, Y", 1, nsg6502_opcode_ora_aby},
+        [0x01] = {"ORA INX", 1, nsg6502_opcode_ora_inx},
+        [0x11] = {"ORA INY", 1, nsg6502_opcode_ora_iny},
+
         [0x08] = {"PHP", 1, nsg6502_opcode_php},
         [0x28] = {"PLP", 1, nsg6502_opcode_plp},
 
