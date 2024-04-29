@@ -11,7 +11,7 @@ int main(void) {
 
     cpu.memory[0xFCE2] = 0x69; // ADC
     cpu.memory[0xFCE3] = 0x02; // #
-    cpu.memory[0xFCE4] = 0x0A; // ASL A
+    cpu.memory[0xFCE4] = 0x6A; // ROR A
 
     while (cpu.pc < 0xFCE5) {
         nsg6502_opcode_execute(&cpu);
