@@ -417,15 +417,15 @@ static void nsg6502_opcode_sta_abs(struct nsg6502_cpu *c) {
 }
 
 static void nsg6502_opcode_sta_abx(struct nsg6502_cpu *c) {
-    nsg6502_write_byte(c, nsg6502_read_byte(c, nsg6502_fetch_word(c) + c->x), c->a);
+    nsg6502_write_byte(c, nsg6502_fetch_word(c) + c->x, c->a);
 }
 
 static void nsg6502_opcode_sta_aby(struct nsg6502_cpu *c) {
-    nsg6502_write_byte(c, nsg6502_read_byte(c, nsg6502_fetch_word(c) + c->y), c->a);
+    nsg6502_write_byte(c, nsg6502_fetch_word(c) + c->y, c->a);
 }
 
 static void nsg6502_opcode_sta_inx(struct nsg6502_cpu *c) {
-    nsg6502_write_byte(c, nsg6502_read_byte(c, nsg6502_read_word(c, (nsg6502_fetch_byte(c) + c->x) & 0xFF)), c->a);
+    nsg6502_write_byte(c, nsg6502_read_word(c, (nsg6502_fetch_byte(c) + c->x) & 0xFF), c->a);
 }
 
 static void nsg6502_opcode_sta_iny(struct nsg6502_cpu *c) {
