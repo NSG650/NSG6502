@@ -23,12 +23,7 @@
 #ifndef NSG6502_NO_LIBC
 
 #include <stdio.h>
-#include <stdlib.h>
-#include <string.h>
-
-#define NSG6502_MALLOC malloc
-#define NSG6502_FREE free
-#define NSG6502_DEBUG_PRINT(...) (printf(__VA_ARGS__)) 
+#define NSG6502_DEBUG_PRINT(...) (printf(__VA_ARGS__))
 
 #endif
 
@@ -63,14 +58,6 @@ struct nsg6502_cpu {
     void (*memory_write_callback)(struct nsg6502_cpu *, uint16_t, uint8_t);
 };
 
-static void nsg6502_reset(struct nsg6502_cpu *c) {
-    c->pc = 0xFCE2;
-    c->sp = 0x00FD; // the SP will be 0x01FD
-    NSG6502_FLAG_SET(c->status, NSG6502_STATUS_REGISTER_INTERRUPT_DISABLE);
-    NSG6502_FLAG_CLEAR(c->status, NSG6502_STATUS_REGISTER_DECIMAL);
-    NSG6502_FLAG_SET(c->status, NSG6502_STATUS_REGISTER_BREAK);
-}
-
 static uint8_t nsg6502_read_byte(struct nsg6502_cpu *c, uint16_t addr) {
     c->ticks++;
     return c->memory_read_callback ? c->memory_read_callback(c, addr) : c->memory[addr];
@@ -83,7 +70,7 @@ static void nsg6502_write_byte(struct nsg6502_cpu *c, uint16_t addr, uint8_t dat
 
 static uint16_t nsg6502_read_word(struct nsg6502_cpu *c, uint16_t addr) {
     if (NSG6502_IS_SYSTEM_BIG_ENDIAN) { return (nsg6502_read_byte(c, addr) << 8) | (nsg6502_read_byte(c, addr + 1)); }
-    else { return nsg6502_read_byte(c, addr) | (nsg6502_read_byte(c, addr + 1) << 8); }
+    else { return (nsg6502_read_byte(c, addr) | (nsg6502_read_byte(c, addr + 1) << 8)); }
 }
 
 static void nsg6502_write_word(struct nsg6502_cpu *c, uint16_t addr, uint16_t data) {
@@ -127,6 +114,18 @@ static void nsg6502_evaluate_flags(struct nsg6502_cpu *c, uint8_t res) {
     if (res == 0) {
         NSG6502_FLAG_SET(c->status, NSG6502_STATUS_REGISTER_ZERO);
     }
+}
+
+static void nsg6502_reset(struct nsg6502_cpu *c) {
+    c->pc = nsg6502_read_word(c, 0xFFFC);
+    c->sp = 0x00FD; // the SP will be 0x01FD
+    NSG6502_FLAG_SET(c->status, NSG6502_STATUS_REGISTER_INTERRUPT_DISABLE);
+    NSG6502_FLAG_CLEAR(c->status, NSG6502_STATUS_REGISTER_DECIMAL);
+    NSG6502_FLAG_SET(c->status, NSG6502_STATUS_REGISTER_BREAK);
+#ifdef NSG6502_DEBUG
+    NSG6502_DEBUG_PRINT("NSG6502: A: 0x%hhx X: 0x%hhx Y: 0x%hhx PC: 0x%hx SP: 0x%x STATUS: 0x%hhx\n",
+                            c->a, c->x, c->y, c->pc, 0x100 + c->sp, c->status);
+#endif
 }
 
 static void nsg6502_adc(struct nsg6502_cpu *c, uint8_t d) {
@@ -947,9 +946,164 @@ static void nsg6502_opcode_ror_abx(struct nsg6502_cpu *c) {
     if(d & 0xFF00) { NSG6502_FLAG_SET(c->status, NSG6502_STATUS_REGISTER_CARRY); }
 }
 
+static void nsg6502_opcode_jmp_abs(struct nsg6502_cpu *c) {
+    c->pc = nsg6502_fetch_word(c);
+}
+
+static void nsg6502_opcode_jmp_ind(struct nsg6502_cpu *c) {
+    uint16_t ptr = nsg6502_fetch_word(c);
+
+    // * An indirect JMP (xxFF) will fail because the MSB will be fetched from
+    //   address xx00 instead of page xx+1.
+    // - https://www.nesdev.org/6502bugs.txt
+
+    uint16_t jump_to = 0;
+    if ((ptr & 0xFF) == 0xFF) {
+        if (NSG6502_IS_SYSTEM_BIG_ENDIAN) {
+            jump_to = (nsg6502_read_byte(c, ptr) << 8) | (nsg6502_read_byte(c, (ptr & 0xFF00)));
+        }
+        else {
+            jump_to = (nsg6502_read_byte(c, (ptr & 0xFF00)) << 8) | nsg6502_read_byte(c, ptr);
+        }
+    }
+    else {
+        jump_to = nsg6502_read_word(c, ptr);
+    }
+
+    c->pc = jump_to;
+}
+
+static void nsg6502_opcode_jsr_abs(struct nsg6502_cpu *c) {
+    c->pc--;
+
+    if (NSG6502_IS_SYSTEM_BIG_ENDIAN) {
+        nsg6502_stack_push_byte(c, c->pc & 0xFF);
+        nsg6502_stack_push_byte(c, (c->pc >> 8) & 0xFF);
+    }
+    else {
+        nsg6502_stack_push_byte(c, (c->pc >> 8) & 0xFF);
+        nsg6502_stack_push_byte(c, c->pc & 0xFF);
+    }
+
+    c->pc = nsg6502_fetch_word(c);
+}
+
+static void nsg6502_opcode_rts(struct nsg6502_cpu *c) {
+    if (NSG6502_IS_SYSTEM_BIG_ENDIAN) { c->pc = ((nsg6502_stack_pop_byte(c) << 8) | (nsg6502_stack_pop_byte(c))); }
+    else { c->pc = (nsg6502_stack_pop_byte(c) | (nsg6502_stack_pop_byte(c) << 8)); }
+}
+
+static void nsg6502_opcode_bvs_rel(struct nsg6502_cpu *c) {
+    if (NSG6502_FLAG_IS_SET(c->status, NSG6502_STATUS_REGISTER_OVERFLOW)) {
+        int8_t addr_rel = nsg6502_fetch_byte(c);
+        c->pc += addr_rel;
+    }
+}
+
+static void nsg6502_opcode_bvc_rel(struct nsg6502_cpu *c) {
+    if (NSG6502_FLAG_IS_SET(c->status, NSG6502_STATUS_REGISTER_OVERFLOW)) {
+        return;
+    }
+    int8_t addr_rel = nsg6502_fetch_byte(c);
+    c->pc += addr_rel;
+}
+
+static void nsg6502_opcode_bmi_rel(struct nsg6502_cpu *c) {
+    if (NSG6502_FLAG_IS_SET(c->status, NSG6502_STATUS_REGISTER_NEGATIVE)) {
+        int8_t addr_rel = nsg6502_fetch_byte(c);
+        c->pc += addr_rel;
+    }
+}
+
+static void nsg6502_opcode_bpl_rel(struct nsg6502_cpu *c) {
+    if (NSG6502_FLAG_IS_SET(c->status, NSG6502_STATUS_REGISTER_NEGATIVE)) {
+        return;
+    }
+    int8_t addr_rel = nsg6502_fetch_byte(c);
+    c->pc += addr_rel;
+}
+
+static void nsg6502_opcode_bne_rel(struct nsg6502_cpu *c) {
+    if (NSG6502_FLAG_IS_SET(c->status, NSG6502_STATUS_REGISTER_ZERO)) {
+       return;
+    }
+    int8_t addr_rel = nsg6502_fetch_byte(c);
+    c->pc += addr_rel;
+}
+
+static void nsg6502_opcode_beq_rel(struct nsg6502_cpu *c) {
+    if (NSG6502_FLAG_IS_SET(c->status, NSG6502_STATUS_REGISTER_ZERO)) {
+        int8_t addr_rel = nsg6502_fetch_byte(c);
+        c->pc += addr_rel;
+    }
+}
+
+static void nsg6502_opcode_bcc_rel(struct nsg6502_cpu *c) {
+    if (NSG6502_FLAG_IS_SET(c->status, NSG6502_STATUS_REGISTER_CARRY)) {
+        return;
+    }
+    int8_t addr_rel = nsg6502_fetch_byte(c);
+    c->pc += addr_rel;
+}
+
+static void nsg6502_opcode_bcs_rel(struct nsg6502_cpu *c) {
+    if (NSG6502_FLAG_IS_SET(c->status, NSG6502_STATUS_REGISTER_CARRY)) {
+        int8_t addr_rel = nsg6502_fetch_byte(c);
+        c->pc += addr_rel;
+    }
+}
+
+static void nsg6502_opcode_brk(struct nsg6502_cpu *c) {
+    c->pc++;
+
+    if (NSG6502_IS_SYSTEM_BIG_ENDIAN) {
+        nsg6502_stack_push_byte(c, c->pc & 0xFF);
+        nsg6502_stack_push_byte(c, (c->pc >> 8) & 0xFF);
+    }
+    else {
+        nsg6502_stack_push_byte(c, (c->pc >> 8) & 0xFF);
+        nsg6502_stack_push_byte(c, c->pc & 0xFF);
+    }
+
+    NSG6502_FLAG_SET(c->status, NSG6502_STATUS_REGISTER_BREAK);
+    nsg6502_stack_push_byte(c, c->status);
+    NSG6502_FLAG_CLEAR(c->status, NSG6502_STATUS_REGISTER_BREAK);
+
+    c->pc = nsg6502_read_word(c, 0xFFFE);
+}
+
+static void nsg6502_opcode_rti(struct nsg6502_cpu *c) {
+    c->status = nsg6502_stack_pop_byte(c);
+    NSG6502_FLAG_CLEAR(c->status, NSG6502_STATUS_REGISTER_BREAK);
+
+    if (NSG6502_IS_SYSTEM_BIG_ENDIAN) { c->pc = ((nsg6502_stack_pop_byte(c) << 8) | (nsg6502_stack_pop_byte(c))); }
+    else { c->pc = (nsg6502_stack_pop_byte(c) | (nsg6502_stack_pop_byte(c) << 8)); }
+}
+
 // Cycle count might be incorrect
 // Not bothered to fix it
 const struct nsg6502_opcode NSG6502_OPCODES[256] = {
+        [0x00] = {"BRK", 1, nsg6502_opcode_brk},
+        [0x40] = {"RTI", 1, nsg6502_opcode_rti},
+
+        [0x20] = {"JSR ABS", 1, nsg6502_opcode_jsr_abs},
+        [0x60] = {"RTS", 1, nsg6502_opcode_rts},
+
+        [0x90] = {"BCC REL", 1, nsg6502_opcode_bcc_rel},
+        [0xB0] = {"BCS REL", 1, nsg6502_opcode_bcs_rel},
+
+        [0xD0] = {"BNE REL", 1, nsg6502_opcode_bne_rel},
+        [0xF0] = {"BEQ REL", 1, nsg6502_opcode_beq_rel},
+
+        [0x50] = {"BVC REL", 1, nsg6502_opcode_bvc_rel},
+        [0x70] = {"BVS REL", 1, nsg6502_opcode_bvs_rel},
+
+        [0x10] = {"BPL REL", 1, nsg6502_opcode_bpl_rel},
+        [0x30] = {"BMI REL", 1, nsg6502_opcode_bmi_rel},
+
+        [0x4C] = {"JMP ABS", 1, nsg6502_opcode_jmp_abs},
+        [0x6C] = {"JMP IND", 1, nsg6502_opcode_jmp_ind},
+
         [0x6A] = {"ROR A", 1, nsg6502_opcode_ror_a},
         [0x66] = {"ROR ZP", 1, nsg6502_opcode_ror_zp},
         [0x76] = {"ROR ZP, X", 2, nsg6502_opcode_ror_zpx},
@@ -1123,7 +1277,11 @@ void nsg6502_opcode_execute(struct nsg6502_cpu *c) {
 
     struct nsg6502_opcode opcode = NSG6502_OPCODES[opcode_byte];
     if (!opcode.function) { return; }
-
+#ifdef NSG6502_DEBUG
+    NSG6502_DEBUG_PRINT("NSG6502: 0x%hx -> %s\n", c->pc, opcode.name);
+    NSG6502_DEBUG_PRINT("NSG6502: A: 0x%hhx X: 0x%hhx Y: 0x%hhx PC: 0x%hx SP: 0x%x STATUS: 0x%hhx\n",
+                            c->a, c->x, c->y, c->pc, 0x100 + c->sp, c->status);
+#endif
     c->ticks += opcode.ticks;
     opcode.function(c);
 }

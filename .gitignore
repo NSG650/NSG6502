@@ -54,3 +54,4 @@ dkms.conf
 .idea/
 
 nsg6502
+*.bin
