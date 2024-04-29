@@ -58,6 +58,9 @@ struct nsg6502_cpu {
     uint8_t *memory;
 
     size_t ticks;
+
+    uint8_t (*memory_read_callback)(struct nsg6502_cpu *, uint16_t);
+    void (*memory_write_callback)(struct nsg6502_cpu *, uint16_t, uint8_t);
 };
 
 static void nsg6502_reset(struct nsg6502_cpu *c) {
@@ -70,12 +73,12 @@ static void nsg6502_reset(struct nsg6502_cpu *c) {
 
 static uint8_t nsg6502_read_byte(struct nsg6502_cpu *c, uint16_t addr) {
     c->ticks++;
-    return c->memory[addr];
+    return c->memory_read_callback ? c->memory_read_callback(c, addr) : c->memory[addr];
 }
 
 static void nsg6502_write_byte(struct nsg6502_cpu *c, uint16_t addr, uint8_t data) {
     c->ticks++;
-    c->memory[addr] = data;
+    c->memory_write_callback ? c->memory_write_callback(c, addr, data) : (c->memory[addr] = data);
 }
 
 static uint16_t nsg6502_read_word(struct nsg6502_cpu *c, uint16_t addr) {
