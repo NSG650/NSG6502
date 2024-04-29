@@ -9,14 +9,11 @@ int main(void) {
 
     nsg6502_reset(&cpu);
 
-    cpu.memory[0xFCE2] = 0x08; // PHP
-    cpu.memory[0xFCE3] = 0x68; // PLA
-    cpu.memory[0xFCE4] = 0x69; // ADC
-    cpu.memory[0xFCE5] = 0x02; // #
-    cpu.memory[0xFCE7] = 0xE9; // SBC
-    cpu.memory[0xFCE8] = 0x01; // #
+    cpu.memory[0xFCE2] = 0x69; // ADC
+    cpu.memory[0xFCE3] = 0x02; // #
+    cpu.memory[0xFCE4] = 0x0A; // ASL A
 
-    while (cpu.pc < 0xFCE8) {
+    while (cpu.pc < 0xFCE5) {
         nsg6502_opcode_execute(&cpu);
     }
 
