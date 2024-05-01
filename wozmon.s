@@ -13,6 +13,8 @@ MODE  = $2B                            ; $00=XAM, $7F=STOR, $AE=BLOCK XAM
 IN    = $0300                          ; Input buffer
 
 RESET:
+                CLD
+                CLI
                 LDA     #$1B
 NOTCR:
                 CMP     #$08           ; Backspace key?
