@@ -104,13 +104,13 @@ static uint16_t nsg6502_fetch_word(struct nsg6502_cpu *c) {
 }
 
 static uint8_t nsg6502_stack_pop_byte(struct nsg6502_cpu *c) {
-	c->ticks++;
-	return c->memory[0x100 + ++c->sp];
+	c->sp++;
+	return nsg6502_read_byte(c, c->sp + 0x100);
 }
 
 static void nsg6502_stack_push_byte(struct nsg6502_cpu *c, uint8_t d) {
-	c->ticks++;
-	c->memory[0x100 + c->sp--] = d;
+	nsg6502_write_byte(c, c->sp + 0x100, d);
+	c->sp--;
 }
 
 static void nsg6502_evaluate_flags(struct nsg6502_cpu *c, uint8_t res) {
@@ -189,11 +189,7 @@ static void nsg6502_sbc(struct nsg6502_cpu *c, uint8_t d) {
 		NSG6502_FLAG_SET(c->status, NSG6502_STATUS_REGISTER_ZERO);
 	}
 
-	/* THE OVERFLOW FLAGS BEHAVIOUR IS UNDOCUMENTATED
-		if (!((c->a ^ d) & 0x80) && ((c->a ^ tmp) & 0x80)) {
-			NSG6502_FLAG_SET(c->status, NSG6502_STATUS_REGISTER_OVERFLOW);
-		}
-	*/
+	
 	if (NSG6502_FLAG_IS_SET(c->status, NSG6502_STATUS_REGISTER_DECIMAL)) {
 		if (((c->a & 0xF) -
 				 ((NSG6502_FLAG_IS_SET(c->status, NSG6502_STATUS_REGISTER_CARRY)
@@ -207,7 +203,12 @@ static void nsg6502_sbc(struct nsg6502_cpu *c, uint8_t d) {
 		}
 	}
 
-	NSG6502_FLAG_CLEAR(c->status, NSG6502_STATUS_REGISTER_CARRY);
+	NSG6502_FLAG_CLEAR(c->status, NSG6502_STATUS_REGISTER_CARRY | NSG6502_STATUS_REGISTER_OVERFLOW);
+
+	if (!((c->a ^ d) & 0x80) && ((c->a ^ tmp) & 0x80)) {
+	//	NSG6502_FLAG_SET(c->status, NSG6502_STATUS_REGISTER_OVERFLOW);
+	}
+	
 
 	if (tmp >= 0) {
 		NSG6502_FLAG_SET(c->status, NSG6502_STATUS_REGISTER_CARRY);
@@ -528,11 +529,16 @@ static void nsg6502_opcode_pla(struct nsg6502_cpu *c) {
 }
 
 static void nsg6502_opcode_php(struct nsg6502_cpu *c) {
-	nsg6502_stack_push_byte(c, c->status);
+	uint8_t d = c->status;
+	d |= 0x20;
+	d &= (~ NSG6502_STATUS_REGISTER_BREAK);
+	nsg6502_stack_push_byte(c, d);
 }
 
 static void nsg6502_opcode_plp(struct nsg6502_cpu *c) {
-	c->status = nsg6502_stack_pop_byte(c);
+	uint8_t d = nsg6502_stack_pop_byte(c);
+	d &= ~(0x20 | NSG6502_STATUS_REGISTER_BREAK);
+	c->status = d;
 }
 
 static void nsg6502_opcode_ora_imm(struct nsg6502_cpu *c) {
@@ -678,11 +684,11 @@ static void nsg6502_opcode_adc_abs(struct nsg6502_cpu *c) {
 }
 
 static void nsg6502_opcode_adc_abx(struct nsg6502_cpu *c) {
-	nsg6502_adc(c, nsg6502_read_byte(c, nsg6502_fetch_word(c)) + c->x);
+	nsg6502_adc(c, nsg6502_read_byte(c, nsg6502_fetch_word(c) + c->x));
 }
 
 static void nsg6502_opcode_adc_aby(struct nsg6502_cpu *c) {
-	nsg6502_adc(c, nsg6502_read_byte(c, nsg6502_fetch_word(c)) + c->y);
+	nsg6502_adc(c, nsg6502_read_byte(c, nsg6502_fetch_word(c) + c->y));
 }
 
 static void nsg6502_opcode_adc_inx(struct nsg6502_cpu *c) {
@@ -714,11 +720,11 @@ static void nsg6502_opcode_sbc_abs(struct nsg6502_cpu *c) {
 }
 
 static void nsg6502_opcode_sbc_abx(struct nsg6502_cpu *c) {
-	nsg6502_sbc(c, nsg6502_read_byte(c, nsg6502_fetch_word(c)) + c->x);
+	nsg6502_sbc(c, nsg6502_read_byte(c, nsg6502_fetch_word(c) + c->x));
 }
 
 static void nsg6502_opcode_sbc_aby(struct nsg6502_cpu *c) {
-	nsg6502_sbc(c, nsg6502_read_byte(c, nsg6502_fetch_word(c)) + c->y);
+	nsg6502_sbc(c, nsg6502_read_byte(c, nsg6502_fetch_word(c) + c->y));
 }
 
 static void nsg6502_opcode_sbc_inx(struct nsg6502_cpu *c) {
@@ -951,6 +957,7 @@ static void nsg6502_opcode_lsr_a(struct nsg6502_cpu *c) {
 		NSG6502_FLAG_SET(c->status, NSG6502_STATUS_REGISTER_CARRY);
 	}
 	c->a = c->a >> 1;
+	c->a &= 0x7f;
 	nsg6502_evaluate_flags(c, c->a);
 }
 
@@ -961,8 +968,9 @@ static void nsg6502_opcode_lsr_zp(struct nsg6502_cpu *c) {
 	if (d & 0x01) {
 		NSG6502_FLAG_SET(c->status, NSG6502_STATUS_REGISTER_CARRY);
 	}
-	nsg6502_write_byte(c, addr, d >> 1);
-	d = c->memory[addr];
+	d >>= 1;
+	d &= 0x7f;
+	nsg6502_write_byte(c, addr, d);
 	nsg6502_evaluate_flags(c, d);
 }
 
@@ -971,12 +979,13 @@ static void nsg6502_opcode_lsr_zpx(struct nsg6502_cpu *c) {
 
 	uint8_t addr = (nsg6502_fetch_byte(c) + c->x) & 0xFF;
 	uint8_t d = nsg6502_read_byte(c, addr);
-	nsg6502_write_byte(c, addr, d >> 1);
-	d = c->memory[addr];
-	nsg6502_evaluate_flags(c, d);
-	if (d & 0xFF00) {
+	if (d & 0x01) {
 		NSG6502_FLAG_SET(c->status, NSG6502_STATUS_REGISTER_CARRY);
 	}
+	d >>= 1;
+	d &= 0x7f;
+	nsg6502_write_byte(c, addr, d);
+	nsg6502_evaluate_flags(c, d);
 }
 
 static void nsg6502_opcode_lsr_abs(struct nsg6502_cpu *c) {
@@ -987,10 +996,9 @@ static void nsg6502_opcode_lsr_abs(struct nsg6502_cpu *c) {
 	if (d & 0x01) {
 		NSG6502_FLAG_SET(c->status, NSG6502_STATUS_REGISTER_CARRY);
 	}
-
-	nsg6502_write_byte(c, addr, d >> 1);
-
-	d = c->memory[addr];
+	d >>= 1;
+	d &= 0x7f;
+	nsg6502_write_byte(c, addr, d);
 	nsg6502_evaluate_flags(c, d);
 }
 
@@ -1001,36 +1009,44 @@ static void nsg6502_opcode_lsr_abx(struct nsg6502_cpu *c) {
 	if (d & 0x01) {
 		NSG6502_FLAG_SET(c->status, NSG6502_STATUS_REGISTER_CARRY);
 	}
-	nsg6502_write_byte(c, addr, d >> 1);
-
-	d = c->memory[addr];
+	d >>= 1;
+	d &= 0x7f;
+	nsg6502_write_byte(c, addr, d);
 	nsg6502_evaluate_flags(c, d);
 }
 
 static void nsg6502_opcode_rol_a(struct nsg6502_cpu *c) {
-	uint8_t d = c->a << 1 |
-				NSG6502_FLAG_IS_SET(c->status, NSG6502_STATUS_REGISTER_CARRY);
+	uint8_t d = c->a << 1;
+	d &= 0xfe;
+	d |= (NSG6502_FLAG_IS_SET(c->status, NSG6502_STATUS_REGISTER_CARRY) ? 1 : 0);
+
 	NSG6502_FLAG_CLEAR(c->status, NSG6502_STATUS_REGISTER_CARRY);
 	if (c->a & 0x80) {
 		NSG6502_FLAG_SET(c->status, NSG6502_STATUS_REGISTER_CARRY);
 	}
+
+	c->a = d;
+
 	nsg6502_evaluate_flags(c, c->a);
 }
 
 static void nsg6502_opcode_rol_zp(struct nsg6502_cpu *c) {
 	uint8_t addr = nsg6502_fetch_byte(c);
-	uint8_t d = nsg6502_read_byte(c, addr);
+	uint8_t d = nsg6502_read_byte(c, addr) ;
 	uint8_t orig = d;
+	
+	d <<= 1;
+	d &= 0xfe;
+	d |= (NSG6502_FLAG_IS_SET(c->status, NSG6502_STATUS_REGISTER_CARRY) ? 1 : 0);
 
 	nsg6502_write_byte(
 		c, addr,
-		d << 1 | NSG6502_FLAG_IS_SET(c->status, NSG6502_STATUS_REGISTER_CARRY));
+		d);
 
 	NSG6502_FLAG_CLEAR(c->status, NSG6502_STATUS_REGISTER_CARRY);
 	if (orig & 0x80) {
 		NSG6502_FLAG_SET(c->status, NSG6502_STATUS_REGISTER_CARRY);
 	}
-	d = c->memory[addr];
 	nsg6502_evaluate_flags(c, d);
 }
 
@@ -1039,15 +1055,18 @@ static void nsg6502_opcode_rol_zpx(struct nsg6502_cpu *c) {
 	uint8_t d = nsg6502_read_byte(c, addr);
 	uint8_t orig = d;
 
+	d <<= 1;
+	d &= 0xfe;
+	d |= (NSG6502_FLAG_IS_SET(c->status, NSG6502_STATUS_REGISTER_CARRY) ? 1 : 0);
+
 	nsg6502_write_byte(
 		c, addr,
-		d << 1 | NSG6502_FLAG_IS_SET(c->status, NSG6502_STATUS_REGISTER_CARRY));
+		d);
 
 	NSG6502_FLAG_CLEAR(c->status, NSG6502_STATUS_REGISTER_CARRY);
 	if (orig & 0x80) {
 		NSG6502_FLAG_SET(c->status, NSG6502_STATUS_REGISTER_CARRY);
 	}
-	d = c->memory[addr];
 	nsg6502_evaluate_flags(c, d);
 }
 
@@ -1056,15 +1075,18 @@ static void nsg6502_opcode_rol_abs(struct nsg6502_cpu *c) {
 	uint8_t d = nsg6502_read_byte(c, addr);
 	uint8_t orig = d;
 
+	d <<= 1;
+	d &= 0xfe;
+	d |= (NSG6502_FLAG_IS_SET(c->status, NSG6502_STATUS_REGISTER_CARRY) ? 1 : 0);
+
 	nsg6502_write_byte(
 		c, addr,
-		d << 1 | NSG6502_FLAG_IS_SET(c->status, NSG6502_STATUS_REGISTER_CARRY));
+		d);
 
 	NSG6502_FLAG_CLEAR(c->status, NSG6502_STATUS_REGISTER_CARRY);
 	if (orig & 0x80) {
 		NSG6502_FLAG_SET(c->status, NSG6502_STATUS_REGISTER_CARRY);
 	}
-	d = c->memory[addr];
 	nsg6502_evaluate_flags(c, d);
 }
 
@@ -1073,25 +1095,33 @@ static void nsg6502_opcode_rol_abx(struct nsg6502_cpu *c) {
 	uint8_t d = nsg6502_read_byte(c, addr);
 	uint8_t orig = d;
 
+	d <<= 1;
+	d &= 0xfe;
+	d |= (NSG6502_FLAG_IS_SET(c->status, NSG6502_STATUS_REGISTER_CARRY) ? 1 : 0);
+
 	nsg6502_write_byte(
 		c, addr,
-		d << 1 | NSG6502_FLAG_IS_SET(c->status, NSG6502_STATUS_REGISTER_CARRY));
+		d);
 
 	NSG6502_FLAG_CLEAR(c->status, NSG6502_STATUS_REGISTER_CARRY);
 	if (orig & 0x80) {
 		NSG6502_FLAG_SET(c->status, NSG6502_STATUS_REGISTER_CARRY);
 	}
-	d = c->memory[addr];
 	nsg6502_evaluate_flags(c, d);
 }
 
 static void nsg6502_opcode_ror_a(struct nsg6502_cpu *c) {
-	uint8_t d = c->a << 7 |
-				NSG6502_FLAG_IS_SET(c->status, NSG6502_STATUS_REGISTER_CARRY);
+	uint8_t d = c->a >> 1;
+	d &= 0x7f;
+	d |= (NSG6502_FLAG_IS_SET(c->status, NSG6502_STATUS_REGISTER_CARRY) ? 0x80 : 0);
+
 	NSG6502_FLAG_CLEAR(c->status, NSG6502_STATUS_REGISTER_CARRY);
-	if (c->a & 0x80) {
+	if (c->a & 0x1) {
 		NSG6502_FLAG_SET(c->status, NSG6502_STATUS_REGISTER_CARRY);
 	}
+
+	c->a = d;	
+
 	nsg6502_evaluate_flags(c, c->a);
 }
 
@@ -1100,15 +1130,18 @@ static void nsg6502_opcode_ror_zp(struct nsg6502_cpu *c) {
 	uint8_t d = nsg6502_read_byte(c, addr);
 	uint8_t orig = d;
 
+	d >>= 1;
+	d &= 0x7f;
+	d |= (NSG6502_FLAG_IS_SET(c->status, NSG6502_STATUS_REGISTER_CARRY) ? 0x80 : 0);
+
 	nsg6502_write_byte(
 		c, addr,
-		d << 7 | NSG6502_FLAG_IS_SET(c->status, NSG6502_STATUS_REGISTER_CARRY));
+		d);
 
 	NSG6502_FLAG_CLEAR(c->status, NSG6502_STATUS_REGISTER_CARRY);
-	if (orig & 0x80) {
+	if (orig & 0x1) {
 		NSG6502_FLAG_SET(c->status, NSG6502_STATUS_REGISTER_CARRY);
 	}
-	d = c->memory[addr];
 	nsg6502_evaluate_flags(c, d);
 }
 
@@ -1117,15 +1150,18 @@ static void nsg6502_opcode_ror_zpx(struct nsg6502_cpu *c) {
 	uint8_t d = nsg6502_read_byte(c, addr);
 	uint8_t orig = d;
 
+	d >>= 1;
+	d &= 0x7f;
+	d |= (NSG6502_FLAG_IS_SET(c->status, NSG6502_STATUS_REGISTER_CARRY) ? 0x80 : 0);
+
 	nsg6502_write_byte(
 		c, addr,
-		d << 7 | NSG6502_FLAG_IS_SET(c->status, NSG6502_STATUS_REGISTER_CARRY));
+		d);
 
 	NSG6502_FLAG_CLEAR(c->status, NSG6502_STATUS_REGISTER_CARRY);
-	if (orig & 0x80) {
+	if (orig & 0x1) {
 		NSG6502_FLAG_SET(c->status, NSG6502_STATUS_REGISTER_CARRY);
 	}
-	d = c->memory[addr];
 	nsg6502_evaluate_flags(c, d);
 }
 
@@ -1134,15 +1170,18 @@ static void nsg6502_opcode_ror_abs(struct nsg6502_cpu *c) {
 	uint8_t d = nsg6502_read_byte(c, addr);
 	uint8_t orig = d;
 
+	d >>= 1;
+	d &= 0x7f;
+	d |= (NSG6502_FLAG_IS_SET(c->status, NSG6502_STATUS_REGISTER_CARRY) ? 0x80 : 0);
+
 	nsg6502_write_byte(
 		c, addr,
-		d << 7 | NSG6502_FLAG_IS_SET(c->status, NSG6502_STATUS_REGISTER_CARRY));
+		d);
 
 	NSG6502_FLAG_CLEAR(c->status, NSG6502_STATUS_REGISTER_CARRY);
-	if (orig & 0x80) {
+	if (orig & 0x1) {
 		NSG6502_FLAG_SET(c->status, NSG6502_STATUS_REGISTER_CARRY);
 	}
-	d = c->memory[addr];
 	nsg6502_evaluate_flags(c, d);
 }
 
@@ -1151,15 +1190,18 @@ static void nsg6502_opcode_ror_abx(struct nsg6502_cpu *c) {
 	uint8_t d = nsg6502_read_byte(c, addr);
 	uint8_t orig = d;
 
+	d >>= 1;
+	d &= 0x7f;
+	d |= (NSG6502_FLAG_IS_SET(c->status, NSG6502_STATUS_REGISTER_CARRY) ? 0x80 : 0);
+
 	nsg6502_write_byte(
 		c, addr,
-		d << 7 | NSG6502_FLAG_IS_SET(c->status, NSG6502_STATUS_REGISTER_CARRY));
+		d);
 
 	NSG6502_FLAG_CLEAR(c->status, NSG6502_STATUS_REGISTER_CARRY);
-	if (orig & 0x80) {
+	if (orig & 0x1) {
 		NSG6502_FLAG_SET(c->status, NSG6502_STATUS_REGISTER_CARRY);
 	}
-	d = c->memory[addr];
 	nsg6502_evaluate_flags(c, d);
 }
 
